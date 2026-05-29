@@ -15,8 +15,10 @@ import os
 import time
 import argparse
 
+
 class TvmaoEPGCrawler:
     """电视猫EPG爬虫"""
+    
     def __init__(self, province_id='cctv', output_dir='EPG'):
         self.province_id = province_id
         self.output_dir = output_dir
@@ -38,7 +40,7 @@ class TvmaoEPGCrawler:
         # 今天的w值和日期
         self.today_w = None
         self.today_date = None
-
+    
     def detect_today_w(self):
         """访问主页，检测今天是w几"""
         url = f"{self.base_url}/{self.province_id}"
@@ -54,6 +56,7 @@ class TvmaoEPGCrawler:
                 self.today_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
                 print(f"  今天是: w{self.today_w} ({self.today_date.strftime('%Y-%m-%d')})")
                 return True
+            
             # 如果URL没有w值，从页面内容中找
             soup = BeautifulSoup(response.text, 'lxml')
             # 查找"往后两小时"的链接
@@ -66,6 +69,7 @@ class TvmaoEPGCrawler:
                     self.today_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
                     print(f"  今天是: w{self.today_w} ({self.today_date.strftime('%Y-%m-%d')})")
                     return True
+            
             # 查找时间导航中的任意链接
             time_links = soup.find_all('a', href=re.compile(r'w\d-h\d+'))
             if time_links:
@@ -76,12 +80,13 @@ class TvmaoEPGCrawler:
                     self.today_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
                     print(f"  今天是: w{self.today_w} ({self.today_date.strftime('%Y-%m-%d')})")
                     return True
+            
             print("  无法检测今天的星期值")
             return False
         except Exception as e:
             print(f"  检测失败: {e}")
             return False
-
+    
     def get_w_and_date(self, day_offset):
         """
         根据偏移量计算w值和日期
@@ -95,7 +100,7 @@ class TvmaoEPGCrawler:
         elif target_w > 7:
             target_w -= 7
         return target_w, target_date
-
+    
     def fetch_page(self, week_num, hour_block):
         """抓取指定周和时间段的页面"""
         url = f"{self.base_url}/{self.province_id}/w{week_num}-h{hour_block}.html"
@@ -107,12 +112,40 @@ class TvmaoEPGCrawler:
         except Exception as e:
             print(f"失败: {e}")
             return None
-
+    
+    def _extract_channel_id(self, href, channel_name):
+        """
+        提取频道ID，避免重复前缀
+        """
+        # 从href中提取频道标识
+        match = re.search(r'/program/([^/]+)/([^/]+?)(?:-w\d+)?\.html', href)
+        if match:
+            category = match.group(1)  # 如 'cctv', 'satellite' 等
+            channel_code = match.group(2)  # 如 'CCTV-1', 'CCTV-11' 等
+            
+            # 标准化：转为小写并替换下划线和空格
+            category_clean = category.lower().replace('_', '').replace(' ', '')
+            channel_code_clean = channel_code.lower().replace('_', '').replace(' ', '')
+            
+            # 检查channel_code是否已经包含category前缀
+            if channel_code_clean.startswith(category_clean):
+                # 已经包含前缀，直接使用channel_code（保持原始大小写）
+                channel_id = channel_code
+            else:
+                # 不包含前缀，添加province_id前缀
+                channel_id = f"{self.province_id}_{channel_code}"
+            
+            return channel_id
+        else:
+            # 如果无法从href提取，使用频道名+地区前缀
+            return f"{self.province_id}_{channel_name}"
+    
     def parse_page(self, html, target_date):
         """解析页面，提取频道和节目信息"""
         soup = BeautifulSoup(html, 'lxml')
         # 查找所有节目表格
         tables = soup.find_all('table', class_='timetable')
+        
         for table in tables:
             rows = table.find_all('tr')
             for row in rows:
@@ -120,23 +153,22 @@ class TvmaoEPGCrawler:
                 channel_cell = row.find('td', class_='tdchn')
                 if not channel_cell:
                     continue
+                
                 channel_link = channel_cell.find('a', class_='black_link')
                 if not channel_link:
                     continue
+                
                 # 提取频道ID和名称
                 href = channel_link.get('href', '')
                 channel_name = channel_link.get_text(strip=True)
-                # 从href提取频道ID（兼容不同格式）
-                match = re.search(r'/program[^/]*/([^-]+?)(?:-w\d+)?\.html', href)
-                if match:
-                    channel_id = match.group(1)
-                    # 为避免不同地区相同频道名冲突，添加地区前缀
-                    channel_id = f"{self.province_id}_{channel_id}"
-                else:
-                    channel_id = f"{self.province_id}_{channel_name}"
+                
+                # 使用优化后的方法提取频道ID
+                channel_id = self._extract_channel_id(href, channel_name)
+                
                 # 保存频道
                 if channel_id not in self.channels:
                     self.channels[channel_id] = channel_name
+                
                 # 获取节目信息
                 program_cells = row.find_all('td', class_='tdpro')
                 for cell in program_cells:
@@ -144,60 +176,72 @@ class TvmaoEPGCrawler:
                     title_div = cell.find('div', class_='font14')
                     if not title_div:
                         continue
+                    
                     title_link = title_div.find('a')
                     if title_link:
                         title = title_link.get('title', '') or title_link.get_text(strip=True)
                     else:
                         title = title_div.get_text(strip=True)
+                    
                     # 检查集数
                     title_text = title_div.get_text(strip=True)
                     episode_match = re.search(r'\((\d+)\)', title_text)
                     if episode_match and title:
                         title = f"{title} 第{episode_match.group(1)}集"
+                    
                     # 获取时间
                     time_div = cell.find('div', class_='font13')
                     if not time_div:
                         continue
+                    
                     time_text = time_div.get_text(strip=True)
                     time_match = re.match(r'(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})', time_text)
                     if not time_match:
                         continue
+                    
                     start_hour = int(time_match.group(1))
                     start_min = int(time_match.group(2))
                     end_hour = int(time_match.group(3))
                     end_min = int(time_match.group(4))
+                    
                     # 构建完整时间，基于传入的目标日期
                     start_date = target_date
                     end_date = target_date
+                    
                     # 处理跨天：结束时间小于开始时间
                     if end_hour < start_hour or (end_hour == start_hour and end_min < start_min):
                         end_date = target_date + timedelta(days=1)
+                    
                     try:
                         start_time = start_date.replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
                         end_time = end_date.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
                     except ValueError:
                         continue
+                    
                     self.programs.append({
                         'channel_id': channel_id,
                         'title': title.strip(),
                         'start': start_time,
                         'stop': end_time
                     })
-
+    
     def crawl(self):
         """执行抓取"""
         print(f"\n{'=' * 60}")
         print(f"开始抓取地区: {self.province_id}")
         print(f"{'=' * 60}")
+        
         # 首先检测今天是w几
         if not self.detect_today_w():
             print(f"  ✗ 无法检测今天的星期，跳过 {self.province_id}")
             return False
+        
         # 抓取昨天、今天、明天（共3天）
         for day_offset in [-1, 0, 1]:
             target_w, target_date = self.get_w_and_date(day_offset)
             day_name = {-1: '昨天', 0: '今天', 1: '明天'}[day_offset]
-            print(f"\n  抓取 {day_name}: {target_date.strftime('%Y-%m-%d')} (w{target_w})")
+            print(f"\n抓取 {day_name}: {target_date.strftime('%Y-%m-%d')} (w{target_w})")
+            
             for hour in self.hour_blocks:
                 print(f"    {hour:02d}:00-{(hour+2)%24:02d}:00 ... ", end="", flush=True)
                 html = self.fetch_page(target_w, hour)
@@ -209,9 +253,10 @@ class TvmaoEPGCrawler:
                 else:
                     print("失败")
                 time.sleep(0.3)
-        print(f"\n  ✓ 完成 {self.province_id}: {len(self.channels)} 个频道, {len(self.programs)} 个节目")
+        
+        print(f"\n✓ 完成 {self.province_id}: {len(self.channels)} 个频道, {len(self.programs)} 个节目")
         return True
-
+    
     def remove_duplicates(self):
         """去除重复节目（相同频道+相同开始时间）"""
         seen = set()
@@ -223,13 +268,15 @@ class TvmaoEPGCrawler:
                 unique_programs.append(prog)
         self.programs = unique_programs
         print(f"  去重后: {len(self.programs)} 个节目")
-
+    
     def generate_xmltv(self):
         """生成XMLTV格式的XML"""
         self.remove_duplicates()
+        
         root = ET.Element('tv')
         root.set('generator-info-name', 'tvmao-epg-crawler')
         root.set('generator-info-url', 'https://www.tvmao.com')
+        
         # 添加频道
         for channel_id, channel_name in sorted(self.channels.items()):
             channel_elem = ET.SubElement(root, 'channel')
@@ -237,6 +284,7 @@ class TvmaoEPGCrawler:
             display_name = ET.SubElement(channel_elem, 'display-name')
             display_name.set('lang', 'zh')
             display_name.text = channel_name
+        
         # 添加节目
         self.programs.sort(key=lambda x: (x['channel_id'], x['start']))
         for prog in self.programs:
@@ -249,53 +297,63 @@ class TvmaoEPGCrawler:
             title = ET.SubElement(programme, 'title')
             title.set('lang', 'zh')
             title.text = prog['title']
+        
         return root
-
+    
     def save(self, filename='epg.xml'):
         """保存XML文件"""
         if not self.channels:
             print("  没有抓取到数据，跳过保存")
             return None, None
+        
         os.makedirs(self.output_dir, exist_ok=True)
+        
         root = self.generate_xmltv()
+        
         # 格式化XML
         xml_str = ET.tostring(root, encoding='unicode')
         dom = minidom.parseString(xml_str)
         pretty_xml = dom.toprettyxml(indent='  ', encoding='utf-8')
+        
+        # 清理多余的空行
         lines = pretty_xml.decode('utf-8').split('\n')
         lines = [line for line in lines if line.strip()]
         pretty_xml = '\n'.join(lines)
+        
         # 保存XML
         xml_path = os.path.join(self.output_dir, filename)
         with open(xml_path, 'w', encoding='utf-8') as f:
             f.write(pretty_xml)
         print(f"  已保存: {xml_path}")
+        
         # 保存压缩版
         gz_path = os.path.join(self.output_dir, filename.replace('.xml', '.xml.gz'))
         with gzip.open(gz_path, 'wt', encoding='utf-8') as f:
             f.write(pretty_xml)
         print(f"  已保存: {gz_path}")
+        
         # 显示文件大小
         xml_size = os.path.getsize(xml_path)
         gz_size = os.path.getsize(gz_path)
         print(f"  文件大小: XML={xml_size:,} bytes, GZ={gz_size:,} bytes")
+        
         return xml_path, gz_path
 
 
 def main():
     parser = argparse.ArgumentParser(description='电视猫EPG爬虫 - 多地区合并抓取')
-    parser.add_argument('--province', 
+    parser.add_argument('--province',
                        default='satellite,cctv,SCTV,CCTVPAYFEE,CETV,CHC,BAMC,HSCM,SCYBTV',
                        help='地区代码，多个用逗号分隔 (默认: satellite,cctv,SCTV,CCTVPAYFEE,CETV,CHC,BAMC,HSCM,SCYBTV)')
     parser.add_argument('--output', default='EPG', help='输出目录 (默认: EPG)')
     args = parser.parse_args()
-
+    
     # 分割省份代码
     province_ids = [p.strip() for p in args.province.split(',') if p.strip()]
     if not province_ids:
         print("错误：未指定有效的地区代码")
         return
-
+    
     print(f"{'='*60}")
     print(f"电视猫EPG多地区爬虫")
     print(f"{'='*60}")
@@ -316,11 +374,11 @@ def main():
         print(f"  {i}. {pid:15s} → {name}")
     print(f"\n输出目录: {args.output}")
     print(f"{'='*60}\n")
-
+    
     all_channels = {}
     all_programs = []
     success_count = 0
-
+    
     # 依次抓取每个地区
     for i, province_id in enumerate(province_ids, 1):
         crawler = TvmaoEPGCrawler(province_id=province_id, output_dir=args.output)
@@ -331,14 +389,15 @@ def main():
             success_count += 1
         else:
             print(f"  ✗ 抓取失败，跳过地区 {province_id}")
+        
         if i < len(province_ids):
-            print(f"\n  休息 2 秒后继续...")
+            print(f"\n休息 2 秒后继续...")
             time.sleep(2)
-
+    
     if not all_channels:
         print("\n❌ 未抓取到任何有效数据，退出")
         return
-
+    
     # 创建合并后的爬虫实例用于生成XML
     print(f"\n{'='*60}")
     print(f"合并数据并生成XMLTV文件")
@@ -347,7 +406,7 @@ def main():
     final_crawler.channels = all_channels
     final_crawler.programs = all_programs
     final_crawler.save()
-
+    
     print(f"\n{'='*60}")
     print(f"✓ 全部完成!")
     print(f"{'='*60}")
