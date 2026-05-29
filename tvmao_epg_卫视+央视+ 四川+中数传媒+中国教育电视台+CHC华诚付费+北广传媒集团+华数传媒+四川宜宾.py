@@ -112,34 +112,23 @@ class TvmaoEPGCrawler:
         except Exception as e:
             print(f"失败: {e}")
             return None
-    
+
     def _extract_channel_id(self, href, channel_name):
         """
-        提取频道ID，避免重复前缀
+        提取频道ID，去掉所有前缀，只保留频道名称
         """
         # 从href中提取频道标识
         match = re.search(r'/program/([^/]+)/([^/]+?)(?:-w\d+)?\.html', href)
         if match:
             category = match.group(1)  # 如 'cctv', 'satellite' 等
-            channel_code = match.group(2)  # 如 'CCTV-1', 'CCTV-11' 等
+            channel_code = match.group(2)  # 如 'CCTV-1', 'CCTV-11', 'hunanweishi' 等
             
-            # 标准化：转为小写并替换下划线和空格
-            category_clean = category.lower().replace('_', '').replace(' ', '')
-            channel_code_clean = channel_code.lower().replace('_', '').replace(' ', '')
-            
-            # 检查channel_code是否已经包含category前缀
-            if channel_code_clean.startswith(category_clean):
-                # 已经包含前缀，直接使用channel_code（保持原始大小写）
-                channel_id = channel_code
-            else:
-                # 不包含前缀，添加province_id前缀
-                channel_id = f"{self.province_id}_{channel_code}"
-            
-            return channel_id
+            # 直接使用频道代码，去掉所有前缀
+            return channel_code
         else:
-            # 如果无法从href提取，使用频道名+地区前缀
-            return f"{self.province_id}_{channel_name}"
-    
+            # 如果无法从href提取，使用频道名
+            return channel_name
+
     def parse_page(self, html, target_date):
         """解析页面，提取频道和节目信息"""
         soup = BeautifulSoup(html, 'lxml')
@@ -162,7 +151,7 @@ class TvmaoEPGCrawler:
                 href = channel_link.get('href', '')
                 channel_name = channel_link.get_text(strip=True)
                 
-                # 使用优化后的方法提取频道ID
+                # 使用优化后的方法提取频道ID（去掉前缀）
                 channel_id = self._extract_channel_id(href, channel_name)
                 
                 # 保存频道
@@ -224,7 +213,7 @@ class TvmaoEPGCrawler:
                         'start': start_time,
                         'stop': end_time
                     })
-    
+
     def crawl(self):
         """执行抓取"""
         print(f"\n{'=' * 60}")
