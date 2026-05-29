@@ -1,0 +1,37 @@
+name: Daily EPG Update
+
+on:
+  schedule:
+    # 每天 UTC 18:00 运行（北京时间凌晨 02:00）
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+jobs:
+  update-epg:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run EPG scraper
+      run: |
+        python "tvmao_epg_卫视+央视+ 四川+中数传媒+中国教育电视台+CHC华诚付费+北广传媒集团+华数传媒+四川宜宾.py"
+
+    - name: Commit and push changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add EPG/
+        git commit -m "Auto update EPG data [skip ci]" || echo "No changes to commit"
+        git push
